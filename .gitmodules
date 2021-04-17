@@ -1,0 +1,3 @@
+[submodule "dromajo"]
+	path = dromajo
+	url = git@github-as-et:chipsalliance/dromajo.git
