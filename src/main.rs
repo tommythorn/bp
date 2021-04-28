@@ -68,7 +68,7 @@ impl SaturatingBoolCounters for TwoBitWeight {
     }
 
     fn to_bool(&self) -> bool {
-        WEAKLY_TAKEN << SCALE <= *self
+        Self::weakly_taken() <= *self
     }
 }
 
@@ -76,7 +76,6 @@ trait Predictor {
     // XXX Make predict_and_update process a batch of branch events
     fn predict_and_update(&mut self, addr: usize, was_taken: bool);
 
-    // XXX Combine into single function returning a tuple
     fn report(&self) -> (String, Vec<usize>, usize, usize);
 }
 
@@ -121,7 +120,7 @@ impl LocalBp {
 impl Predictor for LocalBp {
     fn predict_and_update(&mut self, addr: usize, was_taken: bool) {
         let index = (addr >> 1) & self.addr_mask;
-        let predicted: bool = self.pht[index] >= 2;
+        let predicted: bool = self.pht[index].to_bool();
         self.pht[index].update(was_taken);
         self.misses += (predicted != was_taken) as usize;
     }
@@ -159,7 +158,7 @@ impl GshareBp {
 impl Predictor for GshareBp {
     fn predict_and_update(&mut self, addr: usize, was_taken: bool) {
         let index = (((addr >> 1) ^ self.history) & self.addr_mask) as usize;
-        let predicted: bool = self.pht[index] >= 2;
+        let predicted: bool = self.pht[index].to_bool();
         self.pht[index].update(was_taken);
         self.misses += (predicted != was_taken) as usize;
         self.history = self.history << 1 | was_taken as usize;
