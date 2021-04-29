@@ -27,7 +27,7 @@ trait SaturatingBoolCounters {
 
 const SCALE: usize = 5;
 
-fn weakly_from_bool(b: bool) -> TwoBitWeight {
+fn from_bool(b: bool) -> TwoBitWeight {
     if b {
         WEAKLY_TAKEN << SCALE
     } else {
@@ -76,36 +76,50 @@ impl SaturatingBoolCounters for TwoBitWeight {
 }
 
 #[test]
-    fn idempodence() {
-        // Level 0 sanity - idempodence
-        assert_eq!(weakly_from_bool(false).to_bool(), false);
-        assert_eq!(weakly_from_bool(true).to_bool(), true);
-    }
+fn idempodence() {
+    // Level 0 sanity - idempodence
+    assert_eq!(from_bool(false).to_bool(), false);
+    assert_eq!(from_bool(true).to_bool(), true);
+}
 
 #[test]
-    fn strengthening() {
-        // Level 1 sanity - strengthening
-        assert_eq!(weakly_from_bool(false).update(false).to_bool(), false);
-        assert_eq!(weakly_from_bool(true).update(true).to_bool(), true);
-    }
+fn strengthening() {
+    // Level 1 sanity - strengthening
+    assert_eq!(from_bool(false).update(false).to_bool(), false);
+    assert_eq!(from_bool(true).update(true).to_bool(), true);
+}
 
 #[test]
-    fn weak_update() {
-        // Level 2 sanity - weak + change
-        assert_eq!(weakly_from_bool(false).update(true).to_bool(), true);
-        assert_eq!(weakly_from_bool(true).update(false).to_bool(), false);
-    }
+fn weak_update() {
+    // Level 2 sanity - weak + change
+    assert_eq!(from_bool(false).update(true).to_bool(), true);
+    assert_eq!(from_bool(true).update(false).to_bool(), false);
+}
 
 #[test]
-    fn strong_update() {
-        // Level 3 sanity - strong + change
-        assert_eq!(weakly_from_bool(false).update(false).update(true).to_bool(), false);
-        assert_eq!(weakly_from_bool(true).update(true).update(false).to_bool(), true);
+fn strong_update() {
+    // Level 3 sanity - strong + change
+    assert_eq!(from_bool(false).update(false).update(true).to_bool(), false);
+    assert_eq!(from_bool(true).update(true).update(false).to_bool(), true);
 
-        // Level 4 sanity - strong + change*2
-        assert_eq!(weakly_from_bool(false).update(false).update(true).update(true).to_bool(), true);
-        assert_eq!(weakly_from_bool(true).update(true).update(false).update(false).to_bool(), false);
-    }
+    // Level 4 sanity - strong + change*2
+    assert_eq!(
+        from_bool(false)
+            .update(false)
+            .update(true)
+            .update(true)
+            .to_bool(),
+        true
+    );
+    assert_eq!(
+        from_bool(true)
+            .update(true)
+            .update(false)
+            .update(false)
+            .to_bool(),
+        false
+    );
+}
 
 trait Predictor {
     // XXX Make predict_and_update process a batch of branch events
@@ -301,8 +315,8 @@ struct Yags1Bp {
 
 impl Yags1Bp {
     fn new(addr_bits: usize, dir_bits: usize, tag_bits: usize) -> Yags1Bp {
-        let choice_pht = vec![weakly_from_bool(true); 1 << addr_bits];
-        let direction_pht = vec![weakly_from_bool(true); 1 << dir_bits];
+        let choice_pht = vec![from_bool(true); 1 << addr_bits];
+        let direction_pht = vec![from_bool(true); 1 << dir_bits];
         let direction_tag = vec![0; 1 << dir_bits];
         let tag_mask = (1 << tag_bits) - 1;
         Yags1Bp {
@@ -327,9 +341,9 @@ impl Predictor for Yags1Bp {
         addr >>= 1;
 
         // Split the address into index and tag
-        let addr_index = (addr >> 1)           & self.addr_mask;
+        let addr_index = (addr >> 1) & self.addr_mask;
         let hash_index = (addr ^ self.history) & self.dir_mask;
-        let hash_tag   = addr                  & self.tag_mask;
+        let hash_tag = addr & self.tag_mask;
 
         // Access
         let predicted = if self.direction_tag[hash_index] == hash_tag {
@@ -346,7 +360,7 @@ impl Predictor for Yags1Bp {
             self.choice_pht[addr_index].update(was_taken);
             if self.choice_pht[addr_index].to_bool() != was_taken {
                 self.direction_tag[hash_index] = hash_tag;
-                self.direction_pht[hash_index] = weakly_from_bool(was_taken);
+                self.direction_pht[hash_index] = from_bool(was_taken);
             }
         }
 
@@ -361,8 +375,7 @@ impl Predictor for Yags1Bp {
         (
             "YAGS1".to_string(),
             vec![self.addr_bits, self.dir_bits, self.tag_bits],
-            self.choice_pht.capacity() * 2 +
-                self.direction_pht.capacity() * (2 + self.tag_bits),
+            self.choice_pht.capacity() * 2 + self.direction_pht.capacity() * (2 + self.tag_bits),
             self.misses,
         )
     }
@@ -385,8 +398,8 @@ struct Yags2Bp {
 
 impl Yags2Bp {
     fn new(addr_bits: usize, dir_bits: usize, tag_bits: usize) -> Yags2Bp {
-        let choice_pht = vec![weakly_from_bool(true); 1 << addr_bits];
-        let direction_pht = vec![weakly_from_bool(true); 1 << dir_bits];
+        let choice_pht = vec![from_bool(true); 1 << addr_bits];
+        let direction_pht = vec![from_bool(true); 1 << dir_bits];
         let direction_tag = vec![0; 1 << dir_bits];
         let tag_mask = (1 << tag_bits) - 1;
         Yags2Bp {
@@ -428,18 +441,18 @@ impl Predictor for Yags2Bp {
          *
          */
 
-        let addr_index = (addr >> 1)           & self.addr_mask;
+        let addr_index = (addr >> 1) & self.addr_mask;
 
-// This was very poor
-//        let hash_index = (((addr >> 1) & 15) * 16 + ((addr >> 5) ^ history) & 15) & self.addr_mask;
-//        let hash_tag   = (addr ^ (history << 4)) & self.tag_mask;
+        // This was very poor
+        //        let hash_index = (((addr >> 1) & 15) * 16 + ((addr >> 5) ^ history) & 15) & self.addr_mask;
+        //        let hash_tag   = (addr ^ (history << 4)) & self.tag_mask;
 
-//      let hash_index = (((addr >> 1) & 15) * 16 + ((addr >> 5) ^ self.history) & 15) & self.addr_mask;
+        //      let hash_index = (((addr >> 1) & 15) * 16 + ((addr >> 5) ^ self.history) & 15) & self.addr_mask;
 
         let hash_index = (addr ^ self.history) & self.dir_mask;
 
         // {address_bits[1:4], address_bits[5:8] ^ history_bits}
-        let hash_tag   = ((addr & 30) << 4 | (addr >> 5 ^ self.history) & 15)  & self.tag_mask;
+        let hash_tag = ((addr & 30) << 4 | (addr >> 5 ^ self.history) & 15) & self.tag_mask;
 
         // Access
         let predicted = if self.direction_tag[hash_index] == hash_tag {
@@ -456,7 +469,7 @@ impl Predictor for Yags2Bp {
             self.choice_pht[addr_index].update(was_taken);
             if self.choice_pht[addr_index].to_bool() != was_taken {
                 self.direction_tag[hash_index] = hash_tag;
-                self.direction_pht[hash_index] = weakly_from_bool(was_taken);
+                self.direction_pht[hash_index] = from_bool(was_taken);
             }
         }
 
@@ -471,8 +484,7 @@ impl Predictor for Yags2Bp {
         (
             "YAGS2".to_string(),
             vec![self.addr_bits, self.dir_bits, self.tag_bits],
-            self.choice_pht.capacity() * 2 +
-                self.direction_pht.capacity() * (2 + self.tag_bits),
+            self.choice_pht.capacity() * 2 + self.direction_pht.capacity() * (2 + self.tag_bits),
             self.misses,
         )
     }
@@ -496,10 +508,10 @@ struct Yags3Bp {
 
 impl Yags3Bp {
     fn new(addr_bits: usize, dir_bits: usize, tag_bits: usize) -> Yags3Bp {
-        let choice_pht = vec![weakly_from_bool(true); 1 << addr_bits];
+        let choice_pht = vec![from_bool(true); 1 << addr_bits];
         let direction_pht = [
-            vec![weakly_from_bool(true); 1 << dir_bits],
-            vec![weakly_from_bool(true); 1 << dir_bits],
+            vec![from_bool(true); 1 << dir_bits],
+            vec![from_bool(true); 1 << dir_bits],
         ];
         let direction_tag = [vec![0; 1 << dir_bits], vec![0; 1 << dir_bits]];
         let direction_u = [vec![false; 1 << dir_bits], vec![false; 1 << dir_bits]];
@@ -526,9 +538,9 @@ impl Predictor for Yags3Bp {
         // First drop the constant zero LSB
         addr >>= 1;
 
-        let addr_index = (addr >> 1)           & self.addr_mask;
+        let addr_index = (addr >> 1) & self.addr_mask;
         let hash_index = (addr ^ self.history) & self.dir_mask;
-        let hash_tag   = addr                  & self.tag_mask;
+        let hash_tag = addr & self.tag_mask;
 
         // Access
         let used;
@@ -558,10 +570,10 @@ impl Predictor for Yags3Bp {
                 if self.choice_pht[addr_index].to_bool() != was_taken {
                     if !self.direction_u[0][hash_index] {
                         self.direction_tag[0][hash_index] = hash_tag;
-                        self.direction_pht[0][hash_index] = weakly_from_bool(was_taken);
+                        self.direction_pht[0][hash_index] = from_bool(was_taken);
                     } else if !self.direction_u[1][hash_index] {
                         self.direction_tag[1][hash_index] = hash_tag;
-                        self.direction_pht[1][hash_index] = weakly_from_bool(was_taken);
+                        self.direction_pht[1][hash_index] = from_bool(was_taken);
                     } else {
                         self.direction_u[0][hash_index] = false;
                         self.direction_u[1][hash_index] = false;
@@ -581,8 +593,8 @@ impl Predictor for Yags3Bp {
         (
             "YAGS3".to_string(),
             vec![self.addr_bits, self.dir_bits, self.tag_bits],
-            self.choice_pht.capacity() * 2 +
-                self.direction_pht[0].capacity() * 2 * (3 + self.tag_bits),
+            self.choice_pht.capacity() * 2
+                + self.direction_pht[0].capacity() * 2 * (3 + self.tag_bits),
             self.misses,
         )
     }
@@ -607,10 +619,10 @@ struct Yags4Bp {
 impl Yags4Bp {
     fn new(addr_bits: usize, dir_bits: usize, tag_bits: usize) -> Yags4Bp {
         let dir_entries = 1 << dir_bits;
-        let choice_pht = vec![weakly_from_bool(true); 1 << addr_bits];
+        let choice_pht = vec![from_bool(true); 1 << addr_bits];
         let direction_pht = [
-            vec![weakly_from_bool(true); dir_entries],
-            vec![weakly_from_bool(true); dir_entries],
+            vec![from_bool(true); dir_entries],
+            vec![from_bool(true); dir_entries],
         ];
         let direction_tag = [vec![0; dir_entries], vec![0; dir_entries]];
         let direction_u = [vec![false; dir_entries], vec![false; dir_entries]];
@@ -637,9 +649,9 @@ impl Predictor for Yags4Bp {
         // First drop the constant zero LSB
         addr >>= 1;
 
-        let addr_index = (addr >> 1)           & self.addr_mask;
-        let hash_index = ((addr>>1) ^ self.history) & self.dir_mask;
-        let hash_tag   = ((addr & 30) << 4 | (addr >> 5 ^ self.history) & 15)  & self.tag_mask;
+        let addr_index = (addr >> 1) & self.addr_mask;
+        let hash_index = ((addr >> 1) ^ self.history) & self.dir_mask;
+        let hash_tag = ((addr & 30) << 4 | (addr >> 5 ^ self.history) & 15) & self.tag_mask;
 
         // Access
         let used;
@@ -669,10 +681,10 @@ impl Predictor for Yags4Bp {
                 if self.choice_pht[addr_index].to_bool() != was_taken {
                     if !self.direction_u[0][hash_index] {
                         self.direction_tag[0][hash_index] = hash_tag;
-                        self.direction_pht[0][hash_index] = weakly_from_bool(was_taken);
+                        self.direction_pht[0][hash_index] = from_bool(was_taken);
                     } else if !self.direction_u[1][hash_index] {
                         self.direction_tag[1][hash_index] = hash_tag;
-                        self.direction_pht[1][hash_index] = weakly_from_bool(was_taken);
+                        self.direction_pht[1][hash_index] = from_bool(was_taken);
                     } else {
                         self.direction_u[0][hash_index] = false;
                         self.direction_u[1][hash_index] = false;
@@ -692,8 +704,8 @@ impl Predictor for Yags4Bp {
         (
             "YAGS4".to_string(),
             vec![self.addr_bits, self.dir_bits, self.tag_bits],
-            self.choice_pht.capacity() * 2 +
-                self.direction_pht[0].capacity() * 2 * (3 + self.tag_bits),
+            self.choice_pht.capacity() * 2
+                + self.direction_pht[0].capacity() * 2 * (3 + self.tag_bits),
             self.misses,
         )
     }
@@ -726,7 +738,7 @@ fn run(file_name: &str) -> Result<(), std::io::Error> {
         }
     }
 
-//    predictors.push(Box::new(Yags5Bp::new(22, 22, 22)));
+    //    predictors.push(Box::new(Yags5Bp::new(22, 22, 22)));
 
     // Limit test
     // predictors.push(Box::new(Yags1Bp::new(22, 40)));
