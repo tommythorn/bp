@@ -19,23 +19,24 @@ const WEAKLY_TAKEN: TwoBitWeight = 2;
 const _STRONGLY_TAKEN: TwoBitWeight = 3;
 
 trait SaturatingBoolCounters {
-    fn update(&mut self, taken: bool);
+    fn update(&mut self, taken: bool) -> &mut Self;
     fn weakly_taken() -> Self;
     fn weakly_not_taken() -> Self;
     fn to_bool(&self) -> bool;
 }
 
+const SCALE: usize = 5;
+
 fn weakly_from_bool(b: bool) -> TwoBitWeight {
     if b {
-        WEAKLY_TAKEN
+        WEAKLY_TAKEN << SCALE
     } else {
-        WEAKLY_NOT_TAKEN
+        WEAKLY_NOT_TAKEN << SCALE
     }
 }
 
-const SCALE: usize = 5;
 impl SaturatingBoolCounters for TwoBitWeight {
-    fn update(&mut self, taken: bool) {
+    fn update(&mut self, taken: bool) -> &mut Self {
         /* Conceptually
 
         if taken {
@@ -54,9 +55,11 @@ impl SaturatingBoolCounters for TwoBitWeight {
         To save a shift, we use the prescaled representation of the values.
         */
 
-        let new = *self + (taken as i8) * (2 << SCALE) - (1 << SCALE);
+        let new = *self + ((taken as i8) * (2 << SCALE) - (1 << SCALE));
         let overflow_mask = (new << (5 - SCALE)) >> 7;
         *self = *self & overflow_mask | new & !overflow_mask;
+
+        self
     }
 
     fn weakly_taken() -> Self {
@@ -71,6 +74,38 @@ impl SaturatingBoolCounters for TwoBitWeight {
         Self::weakly_taken() <= *self
     }
 }
+
+#[test]
+    fn idempodence() {
+        // Level 0 sanity - idempodence
+        assert_eq!(weakly_from_bool(false).to_bool(), false);
+        assert_eq!(weakly_from_bool(true).to_bool(), true);
+    }
+
+#[test]
+    fn strengthening() {
+        // Level 1 sanity - strengthening
+        assert_eq!(weakly_from_bool(false).update(false).to_bool(), false);
+        assert_eq!(weakly_from_bool(true).update(true).to_bool(), true);
+    }
+
+#[test]
+    fn weak_update() {
+        // Level 2 sanity - weak + change
+        assert_eq!(weakly_from_bool(false).update(true).to_bool(), true);
+        assert_eq!(weakly_from_bool(true).update(false).to_bool(), false);
+    }
+
+#[test]
+    fn strong_update() {
+        // Level 3 sanity - strong + change
+        assert_eq!(weakly_from_bool(false).update(false).update(true).to_bool(), false);
+        assert_eq!(weakly_from_bool(true).update(true).update(false).to_bool(), true);
+
+        // Level 4 sanity - strong + change*2
+        assert_eq!(weakly_from_bool(false).update(false).update(true).update(true).to_bool(), true);
+        assert_eq!(weakly_from_bool(true).update(true).update(false).update(false).to_bool(), false);
+    }
 
 trait Predictor {
     // XXX Make predict_and_update process a batch of branch events
