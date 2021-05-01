@@ -712,37 +712,7 @@ impl Predictor for Yags4Bp {
 }
 
 // XXX It would be nice to turn this into an iterator
-fn run(file_name: &str) -> Result<(), std::io::Error> {
-    let mut predictors: Vec<Box<dyn Predictor>> = if false {
-        vec![Box::new(NoneTakenBp::new()), Box::new(LocalBp::new(14))]
-    } else {
-        vec![]
-    };
-
-    if false {
-        for s in 12..=18 {
-            predictors.push(Box::new(GshareBp::new(s)));
-        }
-        for s in 10..=17 {
-            predictors.push(Box::new(BimodalBp::new(s)));
-        }
-    }
-
-    if true {
-        for d in 0..5 {
-            let s = 13;
-            predictors.push(Box::new(Yags1Bp::new(s, s - d, 6)));
-            predictors.push(Box::new(Yags2Bp::new(s, s - d, 6)));
-            predictors.push(Box::new(Yags3Bp::new(s, s - d, 6)));
-            predictors.push(Box::new(Yags4Bp::new(s, s - d, 6)));
-        }
-    }
-
-    //    predictors.push(Box::new(Yags5Bp::new(22, 22, 22)));
-
-    // Limit test
-    // predictors.push(Box::new(Yags1Bp::new(22, 40)));
-
+fn run(mut predictors: Vec<Box<dyn Predictor>>, file_name: &str) -> Result<(), std::io::Error> {
     let file = File::open(&file_name)?;
     let mut reader = BufReader::new(file);
     let mut header = [0; 1024];
@@ -829,6 +799,39 @@ fn run(file_name: &str) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+fn gen_predictors() -> Vec<Box<dyn Predictor>> {
+    let mut predictors: Vec<Box<dyn Predictor>> = if false {
+        vec![Box::new(NoneTakenBp::new()), Box::new(LocalBp::new(14))]
+    } else {
+        vec![]
+    };
+
+    if false {
+        for s in 12..=18 {
+            predictors.push(Box::new(GshareBp::new(s)));
+        }
+        for s in 10..=17 {
+            predictors.push(Box::new(BimodalBp::new(s)));
+        }
+    }
+
+    if true {
+        for d in 0..5 {
+            let s = 13;
+            predictors.push(Box::new(Yags1Bp::new(s, s - d, 6)));
+            predictors.push(Box::new(Yags2Bp::new(s, s - d, 6)));
+            predictors.push(Box::new(Yags3Bp::new(s, s - d, 6)));
+            predictors.push(Box::new(Yags4Bp::new(s, s - d, 6)));
+        }
+    }
+
+    //    predictors.push(Box::new(Yags5Bp::new(22, 22, 22)));
+
+    // Limit test
+    // predictors.push(Box::new(Yags1Bp::new(22, 40)));
+    predictors
+}
+
 fn main() {
     let matches = App::new("Bp")
         .version("1.0")
@@ -843,5 +846,5 @@ fn main() {
         .get_matches();
 
     let input = matches.value_of("INPUT").unwrap();
-    run(input).expect("failed to read file");
+    run(gen_predictors(), input).expect("failed to read file");
 }
