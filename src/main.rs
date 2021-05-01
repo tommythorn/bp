@@ -8,6 +8,8 @@ use std::time::Instant;
 use std::usize;
 use std::{fs::File, io::BufReader};
 
+//use crossbeam::sync::MsQueue;
+
 // TODO:
 // - separate prediction and update, enabling modelling delayed updates
 
@@ -711,51 +713,31 @@ impl Predictor for Yags4Bp {
     }
 }
 
-// XXX It would be nice to turn this into an iterator
-fn run(mut predictors: Vec<Box<dyn Predictor>>, file_name: &str) -> Result<(), std::io::Error> {
-    let file = File::open(&file_name)?;
-    let mut reader = BufReader::new(file);
-    let mut header = [0; 1024];
-    reader.read_exact(&mut header)?;
-
-    let start = Instant::now();
-
-    if false {
-        match str::from_utf8(&header) {
-            Ok(v) => println!("Header: {}", v),
-            Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
-        };
-    }
-
+fn read_event<T>(reader: &mut BufReader<T>) -> Option<(usize, bool, usize)>
+where
+    T: std::io::Read,
+{
     let mut event_buf: [u8; 8] = [0; 8];
-    let mut instret = 0;
-    let mut count = 0;
-    loop {
-        match reader.read(&mut event_buf) {
-            Ok(bytes_read) => {
-                // EOF: save last file address to restart from this address for next run
-                if bytes_read != 8 {
-                    break;
-                }
+    if let Ok(bytes_read) = reader.read(&mut event_buf) {
+        if bytes_read == 8 {
+            let event = i64::from_le_bytes(event_buf);
+            let addr: usize = ((event << 16) >> 16) as usize;
+            let was_taken: bool = event < 0;
+            let delta: usize = (event as usize >> 48) & 0x7FFF;
 
-                let event = i64::from_le_bytes(event_buf);
-                let addr: usize = ((event << 16) >> 16) as usize;
-                let was_taken: bool = event < 0;
-                let delta: usize = (event as usize >> 48) & 0x7FFF;
-                instret += delta + 1;
-
-                for p in predictors.iter_mut() {
-                    p.predict_and_update(addr, was_taken);
-                }
-
-                count += 1;
-            }
-            Err(err) => return Err(err),
+            return Some((addr, was_taken, delta));
         }
     }
 
-    let elapsed = start.elapsed();
+    None
+}
 
+fn report(
+    predictors: Vec<Box<dyn Predictor>>,
+    elapsed: std::time::Duration,
+    count: usize,
+    instret: usize,
+) -> Result<(), std::io::Error> {
     println!(
         "Processed {} branch events ({} predictions) in {:.2} s = {:.3} Mpredictions/s",
         format_num!(",.0", count as f64),
@@ -797,6 +779,52 @@ fn run(mut predictors: Vec<Box<dyn Predictor>>, file_name: &str) -> Result<(), s
     print!("{}", str::from_utf8(&output).expect("Bad UTF-8"));
 
     Ok(())
+}
+
+// XXX It would be nice to turn this into an iterator
+fn run(mut predictors: Vec<Box<dyn Predictor>>, file_name: &str) -> Result<(), std::io::Error> {
+    let file = File::open(&file_name)?;
+    let mut reader = BufReader::new(file);
+    let mut header = [0; 1024];
+    reader.read_exact(&mut header)?;
+
+    /*
+        let queue = Arc::new(MsQueue::new());
+        let handles: Vec<_> = (1..8)
+            .map(|_| {
+                let t_queue = queue.clone();
+                thread::spawn(move || {
+                    while let Some(i) = t_queue.try_pop() {
+
+                    }
+                })
+            })
+            .collect();
+    */
+
+    if false {
+        match str::from_utf8(&header) {
+            Ok(v) => println!("Header: {}", v),
+            Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
+        };
+    }
+
+    let start = Instant::now();
+
+    let (mut count, mut instret) = (0, 0);
+    while let Some((addr, was_taken, delta)) = read_event(&mut reader) {
+        instret += delta + 1;
+
+        for p in predictors.iter_mut() {
+            p.predict_and_update(addr, was_taken);
+        }
+
+        count += 1;
+    }
+
+    let elapsed = start.elapsed();
+
+    report(predictors, elapsed, count, instret)
 }
 
 fn gen_predictors() -> Vec<Box<dyn Predictor>> {
