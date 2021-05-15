@@ -13,7 +13,7 @@ use rand::Rng;
 
 pub trait Boolish {
     fn update(&mut self, taken: bool) -> &mut Self;
-    fn value(&self) -> bool;
+    fn value(self) -> bool;
     fn new(b: bool) -> Self;
 }
 
@@ -24,7 +24,7 @@ const _STRONGLY_TAKEN: i8 = 3;
 const SCALE: usize = 5;
 
 // NB. Not using enums in order to use a bit encoding trick
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 pub struct TwoBitCounter {
     counter: i8,
 }
@@ -55,7 +55,7 @@ impl Boolish for TwoBitCounter {
         self
     }
 
-    fn value(&self) -> bool {
+    fn value(self) -> bool {
         WEAKLY_TAKEN << SCALE <= self.counter
     }
 
@@ -127,7 +127,7 @@ mod tests {
     }
 }
 
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 pub enum MichaudBool {
     NotTaken100,
     NotTaken99,
@@ -193,10 +193,9 @@ impl Boolish for MichaudBool {
         self
     }
 
-    fn value(&self) -> bool {
-        // XXX Remove &
+    fn value(self) -> bool {
         use MichaudBool::*;
-        matches!(*self, Taken100 | Taken99 | Taken1 | Taken0)
+        matches!(self, Taken100 | Taken99 | Taken1 | Taken0)
     }
 
     fn new(b: bool) -> Self {
