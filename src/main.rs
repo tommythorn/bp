@@ -7,121 +7,10 @@ use std::str;
 use std::time::Instant;
 use std::usize;
 use std::{fs::File, io::BufReader};
+mod weighted_bool;
+use weighted_bool::*;
 
 //use crossbeam::sync::MsQueue;
-
-// TODO:
-// - separate prediction and update, enabling modelling delayed updates
-
-// NB. Not using enums in order to use a bit encoding trick
-type TwoBitWeight = i8;
-const _STRONGLY_NOT_TAKEN: TwoBitWeight = 0;
-const WEAKLY_NOT_TAKEN: TwoBitWeight = 1;
-const WEAKLY_TAKEN: TwoBitWeight = 2;
-const _STRONGLY_TAKEN: TwoBitWeight = 3;
-
-trait SaturatingBoolCounters {
-    fn update(&mut self, taken: bool) -> &mut Self;
-    fn weakly_taken() -> Self;
-    fn weakly_not_taken() -> Self;
-    fn to_bool(&self) -> bool;
-}
-
-const SCALE: usize = 5;
-
-fn from_bool(b: bool) -> TwoBitWeight {
-    if b {
-        WEAKLY_TAKEN << SCALE
-    } else {
-        WEAKLY_NOT_TAKEN << SCALE
-    }
-}
-
-impl SaturatingBoolCounters for TwoBitWeight {
-    fn update(&mut self, taken: bool) -> &mut Self {
-        /* Conceptually
-
-        if taken {
-            if *self != 3 { *self += 1 }
-        } else {
-            if *self != 0 { *self -= 1 }
-        }
-
-        However, using the signbit to capture overflow and expand that
-        to mux in the old value let's us do this branch-free and faster:
-
-        let overflow_mask = (new << 29) >> 31;
-        assert_eq!(overflow_mask, if new & 3 == new { 0 } else { -1 });
-         *self = (*self as i32 & overflow_mask | new & (!overflow_mask)) as i8;
-
-        To save a shift, we use the prescaled representation of the values.
-        */
-
-        let new = *self + ((taken as i8) * (2 << SCALE) - (1 << SCALE));
-        let overflow_mask = (new << (5 - SCALE)) >> 7;
-        *self = *self & overflow_mask | new & !overflow_mask;
-
-        self
-    }
-
-    fn weakly_taken() -> Self {
-        WEAKLY_TAKEN << SCALE
-    }
-
-    fn weakly_not_taken() -> Self {
-        WEAKLY_NOT_TAKEN << SCALE
-    }
-
-    fn to_bool(&self) -> bool {
-        Self::weakly_taken() <= *self
-    }
-}
-
-#[test]
-fn idempodence() {
-    // Level 0 sanity - idempodence
-    assert_eq!(from_bool(false).to_bool(), false);
-    assert_eq!(from_bool(true).to_bool(), true);
-}
-
-#[test]
-fn strengthening() {
-    // Level 1 sanity - strengthening
-    assert_eq!(from_bool(false).update(false).to_bool(), false);
-    assert_eq!(from_bool(true).update(true).to_bool(), true);
-}
-
-#[test]
-fn weak_update() {
-    // Level 2 sanity - weak + change
-    assert_eq!(from_bool(false).update(true).to_bool(), true);
-    assert_eq!(from_bool(true).update(false).to_bool(), false);
-}
-
-#[test]
-fn strong_update() {
-    // Level 3 sanity - strong + change
-    assert_eq!(from_bool(false).update(false).update(true).to_bool(), false);
-    assert_eq!(from_bool(true).update(true).update(false).to_bool(), true);
-
-    // Level 4 sanity - strong + change*2
-    assert_eq!(
-        from_bool(false)
-            .update(false)
-            .update(true)
-            .update(true)
-            .to_bool(),
-        true
-    );
-    assert_eq!(
-        from_bool(true)
-            .update(true)
-            .update(false)
-            .update(false)
-            .to_bool(),
-        false
-    );
-}
 
 trait Predictor {
     // XXX Make predict_and_update process a batch of branch events
@@ -151,14 +40,14 @@ impl Predictor for NoneTakenBp {
 
 struct LocalBp {
     addr_bits: usize,
-    pht: Vec<TwoBitWeight>,
+    pht: Vec<TwoBitCounter>,
     addr_mask: usize,
     misses: usize,
 }
 
 impl LocalBp {
     fn new(addr_bits: usize) -> LocalBp {
-        let pht = vec![TwoBitWeight::weakly_taken(); 1 << addr_bits];
+        let pht = vec![TwoBitCounter::new(true); 1 << addr_bits];
         LocalBp {
             addr_bits,
             pht,
@@ -171,7 +60,7 @@ impl LocalBp {
 impl Predictor for LocalBp {
     fn predict_and_update(&mut self, addr: usize, was_taken: bool) {
         let index = (addr >> 1) & self.addr_mask;
-        let predicted: bool = self.pht[index].to_bool();
+        let predicted: bool = self.pht[index].value();
         self.pht[index].update(was_taken);
         self.misses += (predicted != was_taken) as usize;
     }
@@ -189,7 +78,7 @@ impl Predictor for LocalBp {
 struct GshareBp {
     addr_bits: usize,
     history: usize,
-    pht: Vec<TwoBitWeight>,
+    pht: Vec<TwoBitCounter>,
     addr_mask: usize,
     misses: usize,
 }
@@ -199,7 +88,7 @@ impl GshareBp {
         GshareBp {
             addr_bits,
             history: 0,
-            pht: vec![TwoBitWeight::weakly_taken(); 1 << addr_bits],
+            pht: vec![TwoBitCounter::new(true); 1 << addr_bits],
             addr_mask: (1 << addr_bits) - 1,
             misses: 0,
         }
@@ -209,7 +98,7 @@ impl GshareBp {
 impl Predictor for GshareBp {
     fn predict_and_update(&mut self, addr: usize, was_taken: bool) {
         let index = (((addr >> 1) ^ self.history) & self.addr_mask) as usize;
-        let predicted: bool = self.pht[index].to_bool();
+        let predicted: bool = self.pht[index].value();
         self.pht[index].update(was_taken);
         self.misses += (predicted != was_taken) as usize;
         self.history = self.history << 1 | was_taken as usize;
@@ -228,18 +117,18 @@ impl Predictor for GshareBp {
 struct BimodalBp {
     addr_bits: usize,
     history: usize,
-    choice_pht: Vec<TwoBitWeight>,
-    direction_pht_nt: Vec<TwoBitWeight>,
-    direction_pht_t: Vec<TwoBitWeight>,
+    choice_pht: Vec<TwoBitCounter>,
+    direction_pht_nt: Vec<TwoBitCounter>,
+    direction_pht_t: Vec<TwoBitCounter>,
     addr_mask: usize,
     misses: usize,
 }
 
 impl BimodalBp {
     fn new(addr_bits: usize) -> BimodalBp {
-        let choice_pht = vec![TwoBitWeight::weakly_taken(); 1 << addr_bits];
-        let direction_pht_nt = vec![TwoBitWeight::weakly_taken(); 1 << addr_bits];
-        let direction_pht_t = vec![TwoBitWeight::weakly_taken(); 1 << addr_bits];
+        let choice_pht = vec![TwoBitCounter::new(true); 1 << addr_bits];
+        let direction_pht_nt = vec![TwoBitCounter::new(true); 1 << addr_bits];
+        let direction_pht_t = vec![TwoBitCounter::new(true); 1 << addr_bits];
         BimodalBp {
             addr_bits,
             history: 0,
@@ -257,15 +146,15 @@ impl Predictor for BimodalBp {
         let choice_index = ((addr >> 1) & self.addr_mask) as usize;
         let direction_index = (((addr >> 1) ^ self.history) & self.addr_mask) as usize;
 
-        let choice = self.choice_pht[choice_index].to_bool();
+        let choice = self.choice_pht[choice_index].value();
 
         let predicted;
 
         if choice {
-            predicted = self.direction_pht_t[direction_index].to_bool();
+            predicted = self.direction_pht_t[direction_index].value();
             self.direction_pht_t[direction_index].update(was_taken);
         } else {
-            predicted = self.direction_pht_nt[direction_index].to_bool();
+            predicted = self.direction_pht_nt[direction_index].value();
             self.direction_pht_nt[direction_index].update(was_taken);
         };
 
@@ -306,8 +195,8 @@ struct Yags1Bp {
     dir_bits: usize,
     tag_bits: usize,
     history: usize,
-    choice_pht: Vec<TwoBitWeight>,
-    direction_pht: Vec<TwoBitWeight>,
+    choice_pht: Vec<TwoBitCounter>,
+    direction_pht: Vec<TwoBitCounter>,
     direction_tag: Vec<usize>,
     addr_mask: usize,
     dir_mask: usize,
@@ -317,8 +206,8 @@ struct Yags1Bp {
 
 impl Yags1Bp {
     fn new(addr_bits: usize, dir_bits: usize, tag_bits: usize) -> Yags1Bp {
-        let choice_pht = vec![from_bool(true); 1 << addr_bits];
-        let direction_pht = vec![from_bool(true); 1 << dir_bits];
+        let choice_pht = vec![TwoBitCounter::new(true); 1 << addr_bits];
+        let direction_pht = vec![TwoBitCounter::new(true); 1 << dir_bits];
         let direction_tag = vec![0; 1 << dir_bits];
         let tag_mask = (1 << tag_bits) - 1;
         Yags1Bp {
@@ -349,9 +238,9 @@ impl Predictor for Yags1Bp {
 
         // Access
         let predicted = if self.direction_tag[hash_index] == hash_tag {
-            self.direction_pht[hash_index].to_bool()
+            self.direction_pht[hash_index].value()
         } else {
-            self.choice_pht[addr_index].to_bool()
+            self.choice_pht[addr_index].value()
         };
 
         // Update
@@ -360,9 +249,9 @@ impl Predictor for Yags1Bp {
         } else {
             // The choice is updated on misses
             self.choice_pht[addr_index].update(was_taken);
-            if self.choice_pht[addr_index].to_bool() != was_taken {
+            if self.choice_pht[addr_index].value() != was_taken {
                 self.direction_tag[hash_index] = hash_tag;
-                self.direction_pht[hash_index] = from_bool(was_taken);
+                self.direction_pht[hash_index] = TwoBitCounter::new(was_taken);
             }
         }
 
@@ -389,8 +278,8 @@ struct Yags2Bp {
     dir_bits: usize,
     tag_bits: usize,
     history: usize,
-    choice_pht: Vec<TwoBitWeight>,
-    direction_pht: Vec<TwoBitWeight>,
+    choice_pht: Vec<TwoBitCounter>,
+    direction_pht: Vec<TwoBitCounter>,
     direction_tag: Vec<usize>,
     addr_mask: usize,
     dir_mask: usize,
@@ -400,8 +289,8 @@ struct Yags2Bp {
 
 impl Yags2Bp {
     fn new(addr_bits: usize, dir_bits: usize, tag_bits: usize) -> Yags2Bp {
-        let choice_pht = vec![from_bool(true); 1 << addr_bits];
-        let direction_pht = vec![from_bool(true); 1 << dir_bits];
+        let choice_pht = vec![TwoBitCounter::new(true); 1 << addr_bits];
+        let direction_pht = vec![TwoBitCounter::new(true); 1 << dir_bits];
         let direction_tag = vec![0; 1 << dir_bits];
         let tag_mask = (1 << tag_bits) - 1;
         Yags2Bp {
@@ -458,9 +347,9 @@ impl Predictor for Yags2Bp {
 
         // Access
         let predicted = if self.direction_tag[hash_index] == hash_tag {
-            self.direction_pht[hash_index].to_bool()
+            self.direction_pht[hash_index].value()
         } else {
-            self.choice_pht[addr_index].to_bool()
+            self.choice_pht[addr_index].value()
         };
 
         // Update
@@ -469,9 +358,9 @@ impl Predictor for Yags2Bp {
         } else {
             // The choice is updated on misses
             self.choice_pht[addr_index].update(was_taken);
-            if self.choice_pht[addr_index].to_bool() != was_taken {
+            if self.choice_pht[addr_index].value() != was_taken {
                 self.direction_tag[hash_index] = hash_tag;
-                self.direction_pht[hash_index] = from_bool(was_taken);
+                self.direction_pht[hash_index] = TwoBitCounter::new(was_taken);
             }
         }
 
@@ -498,8 +387,8 @@ struct Yags3Bp {
     dir_bits: usize,
     tag_bits: usize,
     history: usize,
-    choice_pht: Vec<TwoBitWeight>,
-    direction_pht: [Vec<TwoBitWeight>; 2],
+    choice_pht: Vec<TwoBitCounter>,
+    direction_pht: [Vec<TwoBitCounter>; 2],
     direction_tag: [Vec<usize>; 2],
     direction_u: [Vec<bool>; 2],
     addr_mask: usize,
@@ -510,10 +399,10 @@ struct Yags3Bp {
 
 impl Yags3Bp {
     fn new(addr_bits: usize, dir_bits: usize, tag_bits: usize) -> Yags3Bp {
-        let choice_pht = vec![from_bool(true); 1 << addr_bits];
+        let choice_pht = vec![TwoBitCounter::new(true); 1 << addr_bits];
         let direction_pht = [
-            vec![from_bool(true); 1 << dir_bits],
-            vec![from_bool(true); 1 << dir_bits],
+            vec![TwoBitCounter::new(true); 1 << dir_bits],
+            vec![TwoBitCounter::new(true); 1 << dir_bits],
         ];
         let direction_tag = [vec![0; 1 << dir_bits], vec![0; 1 << dir_bits]];
         let direction_u = [vec![false; 1 << dir_bits], vec![false; 1 << dir_bits]];
@@ -548,13 +437,13 @@ impl Predictor for Yags3Bp {
         let used;
         let predicted = if self.direction_tag[0][hash_index] == hash_tag {
             used = Some(0);
-            self.direction_pht[0][hash_index].to_bool()
+            self.direction_pht[0][hash_index].value()
         } else if self.direction_tag[1][hash_index] == hash_tag {
             used = Some(1);
-            self.direction_pht[1][hash_index].to_bool()
+            self.direction_pht[1][hash_index].value()
         } else {
             used = None;
-            self.choice_pht[addr_index].to_bool()
+            self.choice_pht[addr_index].value()
         };
 
         // Update
@@ -562,20 +451,20 @@ impl Predictor for Yags3Bp {
             Some(n) => {
                 self.direction_pht[n][hash_index].update(was_taken);
                 self.direction_u[n][hash_index] =
-                    self.direction_pht[n][hash_index].to_bool() == was_taken;
+                    self.direction_pht[n][hash_index].value() == was_taken;
             }
             None => {
                 // The choice is updated on misses
                 self.choice_pht[addr_index].update(was_taken);
 
                 // NB: this is key no not waste an entry needlessly
-                if self.choice_pht[addr_index].to_bool() != was_taken {
+                if self.choice_pht[addr_index].value() != was_taken {
                     if !self.direction_u[0][hash_index] {
                         self.direction_tag[0][hash_index] = hash_tag;
-                        self.direction_pht[0][hash_index] = from_bool(was_taken);
+                        self.direction_pht[0][hash_index] = TwoBitCounter::new(was_taken);
                     } else if !self.direction_u[1][hash_index] {
                         self.direction_tag[1][hash_index] = hash_tag;
-                        self.direction_pht[1][hash_index] = from_bool(was_taken);
+                        self.direction_pht[1][hash_index] = TwoBitCounter::new(was_taken);
                     } else {
                         self.direction_u[0][hash_index] = false;
                         self.direction_u[1][hash_index] = false;
@@ -608,8 +497,8 @@ struct Yags4Bp {
     dir_bits: usize,
     tag_bits: usize,
     history: usize,
-    choice_pht: Vec<TwoBitWeight>,
-    direction_pht: [Vec<TwoBitWeight>; 2],
+    choice_pht: Vec<TwoBitCounter>,
+    direction_pht: [Vec<TwoBitCounter>; 2],
     direction_tag: [Vec<usize>; 2],
     direction_u: [Vec<bool>; 2],
     addr_mask: usize,
@@ -621,10 +510,10 @@ struct Yags4Bp {
 impl Yags4Bp {
     fn new(addr_bits: usize, dir_bits: usize, tag_bits: usize) -> Yags4Bp {
         let dir_entries = 1 << dir_bits;
-        let choice_pht = vec![from_bool(true); 1 << addr_bits];
+        let choice_pht = vec![TwoBitCounter::new(true); 1 << addr_bits];
         let direction_pht = [
-            vec![from_bool(true); dir_entries],
-            vec![from_bool(true); dir_entries],
+            vec![TwoBitCounter::new(true); dir_entries],
+            vec![TwoBitCounter::new(true); dir_entries],
         ];
         let direction_tag = [vec![0; dir_entries], vec![0; dir_entries]];
         let direction_u = [vec![false; dir_entries], vec![false; dir_entries]];
@@ -659,13 +548,13 @@ impl Predictor for Yags4Bp {
         let used;
         let predicted = if self.direction_tag[0][hash_index] == hash_tag {
             used = Some(0);
-            self.direction_pht[0][hash_index].to_bool()
+            self.direction_pht[0][hash_index].value()
         } else if self.direction_tag[1][hash_index] == hash_tag {
             used = Some(1);
-            self.direction_pht[1][hash_index].to_bool()
+            self.direction_pht[1][hash_index].value()
         } else {
             used = None;
-            self.choice_pht[addr_index].to_bool()
+            self.choice_pht[addr_index].value()
         };
 
         // Update
@@ -673,20 +562,20 @@ impl Predictor for Yags4Bp {
             Some(n) => {
                 self.direction_pht[n][hash_index].update(was_taken);
                 self.direction_u[n][hash_index] =
-                    self.direction_pht[n][hash_index].to_bool() == was_taken;
+                    self.direction_pht[n][hash_index].value() == was_taken;
             }
             None => {
                 // The choice is updated on misses
                 self.choice_pht[addr_index].update(was_taken);
 
                 // NB: this is key no not waste an entry needlessly
-                if self.choice_pht[addr_index].to_bool() != was_taken {
+                if self.choice_pht[addr_index].value() != was_taken {
                     if !self.direction_u[0][hash_index] {
                         self.direction_tag[0][hash_index] = hash_tag;
-                        self.direction_pht[0][hash_index] = from_bool(was_taken);
+                        self.direction_pht[0][hash_index] = TwoBitCounter::new(was_taken);
                     } else if !self.direction_u[1][hash_index] {
                         self.direction_tag[1][hash_index] = hash_tag;
-                        self.direction_pht[1][hash_index] = from_bool(was_taken);
+                        self.direction_pht[1][hash_index] = TwoBitCounter::new(was_taken);
                     } else {
                         self.direction_u[0][hash_index] = false;
                         self.direction_u[1][hash_index] = false;
