@@ -10,6 +10,7 @@ edition = "2018"
 clap = "*"
 format_num = "*"
 crossbeam = "*"
+rand = "*"
 
 [dev-dependencies.cargo-husky]
 version = "1"

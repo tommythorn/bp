@@ -1,3 +1,5 @@
+use rand::Rng;
+
 /**
  * Boolish houses traits what can be interpreted as boolean, but
  * internally may take on more values.  The classic example is two-bit
@@ -123,4 +125,97 @@ mod tests {
             false
         );
     }
+}
+
+#[derive(Clone)]
+pub enum MichaudBool {
+    NotTaken100,
+    NotTaken99,
+    NotTaken1,
+    NotTaken0,
+    Taken0,
+    Taken1,
+    Taken99,
+    Taken100,
+}
+
+impl Boolish for MichaudBool {
+    fn update(&mut self, taken: bool) -> &mut Self {
+        use MichaudBool::*;
+        *self = if taken {
+            match *self {
+                NotTaken100 => NotTaken1, // No place for confidence!
+                NotTaken99 => NotTaken1,
+                NotTaken1 => NotTaken0,
+                NotTaken0 => Taken0,
+                Taken0 => Taken1,
+                Taken1 => {
+                    if lucky_die_roll() {
+                        Taken99
+                    } else {
+                        Taken1
+                    }
+                }
+                Taken99 => {
+                    if lucky_die_roll() {
+                        Taken100
+                    } else {
+                        Taken99
+                    }
+                }
+                Taken100 => Taken100,
+            }
+        } else {
+            match *self {
+                NotTaken100 => NotTaken100,
+                NotTaken99 => {
+                    if lucky_die_roll() {
+                        NotTaken100
+                    } else {
+                        NotTaken99
+                    }
+                }
+                NotTaken1 => {
+                    if lucky_die_roll() {
+                        NotTaken99
+                    } else {
+                        NotTaken1
+                    }
+                }
+                NotTaken0 => NotTaken1,
+                Taken0 => NotTaken0,
+                Taken1 => Taken0,
+                Taken99 => Taken1,
+                Taken100 => Taken1, // No place for confidence!
+            }
+        };
+
+        self
+    }
+
+    fn value(&self) -> bool {
+        // XXX Remove &
+        use MichaudBool::*;
+        matches!(*self, Taken100 | Taken99 | Taken1 | Taken0)
+    }
+
+    fn new(b: bool) -> Self {
+        if b {
+            MichaudBool::Taken0
+        } else {
+            MichaudBool::NotTaken0
+        }
+    }
+}
+
+impl MichaudBool {
+    #[allow(dead_code)]
+    fn confident(self) -> bool {
+        matches!(self, MichaudBool::NotTaken100 | MichaudBool::Taken100)
+    }
+}
+
+fn lucky_die_roll() -> bool {
+    let magic_number = rand::thread_rng().gen_range(1..101);
+    magic_number == 1
 }
