@@ -48,7 +48,9 @@ impl Boolish for TwoBitCounter {
             To save a shift, we use the prescaled representation of the values.
              */
 
-        let new = self.counter + ((taken as i8) * (2 << SCALE) - (1 << SCALE));
+        let new = self
+            .counter
+            .wrapping_add((taken as i8) * (2 << SCALE) - (1 << SCALE));
         let overflow_mask = (new << (5 - SCALE)) >> 7;
         self.counter = self.counter & overflow_mask | new & !overflow_mask;
 
