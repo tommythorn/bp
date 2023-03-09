@@ -118,65 +118,41 @@ mod tests {
 }
 
 #[derive(Copy, Clone)]
-pub enum MichaudBool {
-    NotTaken100,
-    NotTaken99,
-    NotTaken1,
-    NotTaken0,
-    Taken0,
-    Taken1,
-    Taken99,
-    Taken100,
+pub enum Confidence {
+    Weak,
+    Fair,
+    Strong,
+    Conviction,
 }
 
-impl Boolish for MichaudBool {
-    fn update(&mut self, taken: bool) -> &mut Self {
-        use MichaudBool::*;
-        *self = if taken {
-            match *self {
-                NotTaken100 => NotTaken1, // No place for confidence!
-                NotTaken99 => NotTaken1,
-                NotTaken1 => NotTaken0,
-                NotTaken0 => Taken0,
-                Taken0 => Taken1,
-                Taken1 => {
-                    if lucky_die_roll() {
-                        Taken99
-                    } else {
-                        Taken1
-                    }
-                }
-                Taken99 => {
-                    if lucky_die_roll() {
-                        Taken100
-                    } else {
-                        Taken99
-                    }
-                }
-                Taken100 => Taken100,
+pub struct ProbablyBool {
+    value: bool,
+    confidence: Confidence,
+}
+
+impl Boolish for ProbablyBool {
+    fn update(&mut self, new_value: bool) -> &mut Self {
+        use Confidence::*;
+        self.confidence = if self.value == new_value {
+            /* Strengthen */
+            match self.confidence {
+                Weak => Fair,
+                Fair if lucky_die_roll() => Strong,
+                Strong if lucky_die_roll() => Conviction,
+                _ => self.confidence,
             }
         } else {
-            match *self {
-                NotTaken100 => NotTaken100,
-                NotTaken99 => {
-                    if lucky_die_roll() {
-                        NotTaken100
-                    } else {
-                        NotTaken99
-                    }
+            /*
+             * Weaken. The probabilistic behavior is asymmetric as we
+             * exit out of the high confidence on any negative result
+             */
+            match self.confidence {
+                Weak => {
+                    self.value = new_value;
+                    Weak
                 }
-                NotTaken1 => {
-                    if lucky_die_roll() {
-                        NotTaken99
-                    } else {
-                        NotTaken1
-                    }
-                }
-                NotTaken0 => NotTaken1,
-                Taken0 => NotTaken0,
-                Taken1 => Taken0,
-                Taken99 => Taken1,
-                Taken100 => Taken1, // No place for confidence!
+                Fair => Weak,
+                Strong | Conviction => Fair,
             }
         };
 
@@ -184,27 +160,29 @@ impl Boolish for MichaudBool {
     }
 
     fn value(self) -> bool {
-        use MichaudBool::*;
-        matches!(self, Taken100 | Taken99 | Taken1 | Taken0)
+        self.value
     }
 
-    fn new(b: bool) -> Self {
-        if b {
-            MichaudBool::Taken0
-        } else {
-            MichaudBool::NotTaken0
+    fn new(value: bool) -> Self {
+        Self {
+            value,
+            confidence: Confidence::Weak,
         }
     }
 }
 
-impl MichaudBool {
+impl ProbablyBool {
     #[allow(dead_code)]
     fn confident(self) -> bool {
-        matches!(self, MichaudBool::NotTaken100 | MichaudBool::Taken100)
+        !matches!(self.confidence, Confidence::Weak)
+    }
+
+    #[allow(dead_code)]
+    fn highly_confident(self) -> bool {
+        matches!(self.confidence, Confidence::Conviction)
     }
 }
 
 fn lucky_die_roll() -> bool {
-    let magic_number = rand::thread_rng().gen_range(1..101);
-    magic_number == 1
+    rand::thread_rng().gen_range(1..101) == 42
 }
