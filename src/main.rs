@@ -97,7 +97,7 @@ impl GshareBp {
 
 impl Predictor for GshareBp {
     fn predict_and_update(&mut self, addr: usize, was_taken: bool) {
-        let index = (((addr >> 1) ^ self.history) & self.addr_mask) as usize;
+        let index = ((addr >> 1) ^ self.history) & self.addr_mask;
         let predicted: bool = self.pht[index].value();
         self.pht[index].update(was_taken);
         self.misses += (predicted != was_taken) as usize;
@@ -143,8 +143,8 @@ impl BimodalBp {
 
 impl Predictor for BimodalBp {
     fn predict_and_update(&mut self, addr: usize, was_taken: bool) {
-        let choice_index = ((addr >> 1) & self.addr_mask) as usize;
-        let direction_index = (((addr >> 1) ^ self.history) & self.addr_mask) as usize;
+        let choice_index = (addr >> 1) & self.addr_mask;
+        let direction_index = ((addr >> 1) ^ self.history) & self.addr_mask;
 
         let choice = self.choice_pht[choice_index].value();
 
@@ -659,7 +659,7 @@ fn report(
     }
 
     let output = Command::new("gnuplot")
-        .args(&["plot.gp"])
+        .args(["plot.gp"])
         .output()
         .expect("failed to launch gnuplot")
         .stdout;
@@ -672,7 +672,7 @@ fn report(
 
 // XXX It would be nice to turn this into an iterator
 fn run(mut predictors: Vec<Box<dyn Predictor>>, file_name: &str) -> Result<(), std::io::Error> {
-    let file = File::open(&file_name)?;
+    let file = File::open(file_name)?;
     let mut reader = BufReader::new(file);
     let mut header = [0; 1024];
     reader.read_exact(&mut header)?;

@@ -79,53 +79,41 @@ mod tests {
     #[test]
     fn idempodence() {
         // Level 0 sanity - idempodence
-        assert_eq!(TwoBitCounter::new(false).value(), false);
-        assert_eq!(TwoBitCounter::new(true).value(), true);
+        assert!(!TwoBitCounter::new(false).value());
+        assert!(TwoBitCounter::new(true).value());
     }
 
     #[test]
     fn strengthening() {
         // Level 1 sanity - strengthening
-        assert_eq!(TwoBitCounter::new(false).update(false).value(), false);
-        assert_eq!(TwoBitCounter::new(true).update(true).value(), true);
+        assert!(!TwoBitCounter::new(false).update(false).value());
+        assert!(TwoBitCounter::new(true).update(true).value());
     }
 
     #[test]
     fn weak_update() {
         // Level 2 sanity - weak + change
-        assert_eq!(TwoBitCounter::new(false).update(true).value(), true);
-        assert_eq!(TwoBitCounter::new(true).update(false).value(), false);
+        assert!(TwoBitCounter::new(false).update(true).value());
+        assert!(!TwoBitCounter::new(true).update(false).value());
     }
 
     #[test]
     fn strong_update() {
         // Level 3 sanity - strong + change
-        assert_eq!(
-            TwoBitCounter::new(false).update(false).update(true).value(),
-            false
-        );
-        assert_eq!(
-            TwoBitCounter::new(true).update(true).update(false).value(),
-            true
-        );
+        assert!(!TwoBitCounter::new(false).update(false).update(true).value());
+        assert!(TwoBitCounter::new(true).update(true).update(false).value());
 
         // Level 4 sanity - strong + change*2
-        assert_eq!(
-            TwoBitCounter::new(false)
-                .update(false)
-                .update(true)
-                .update(true)
-                .value(),
-            true
-        );
-        assert_eq!(
-            TwoBitCounter::new(true)
-                .update(true)
-                .update(false)
-                .update(false)
-                .value(),
-            false
-        );
+        assert!(TwoBitCounter::new(false)
+            .update(false)
+            .update(true)
+            .update(true)
+            .value());
+        assert!(!TwoBitCounter::new(true)
+            .update(true)
+            .update(false)
+            .update(false)
+            .value());
     }
 }
 
